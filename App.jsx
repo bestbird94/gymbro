@@ -365,12 +365,83 @@ function ProfileModal({ profile, onClose }) {
   );
 }
 
+// ── Auth Modal ────────────────────────────────────────────────────────────────
+function AuthModal({ onClose }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  async function handleSubmit() {
+    setError(""); setSuccess(""); setLoading(true);
+    try {
+      if (mode === "login") {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        onClose();
+      } else {
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        setSuccess("Sikeres regisztráció! Ellenőrizd az emailed, majd jelentkezz be.");
+      }
+    } catch(e) {
+      setError(e.message === "Invalid login credentials" ? "Hibás email vagy jelszó." : e.message);
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.5rem"}}>
+          <div className="font-display" style={{fontSize:"1.8rem",letterSpacing:1}}>
+            {mode === "login" ? "BELÉPÉS" : "REGISZTRÁCIÓ"}
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
+        </div>
+        {error && <div className="alert alert-error">{error}</div>}
+        {success && <div className="alert alert-success">{success}</div>}
+        {!success && <>
+          <div className="form-group">
+            <label className="form-label">Email</label>
+            <input className="form-input" type="email" placeholder="email@example.com"
+              value={email} onChange={e=>setEmail(e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Jelszó</label>
+            <input className="form-input" type="password" placeholder="minimum 6 karakter"
+              value={password} onChange={e=>setPassword(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&handleSubmit()} />
+          </div>
+          <button className="btn btn-neon" onClick={handleSubmit} disabled={loading}
+            style={{width:"100%",justifyContent:"center",padding:"0.8rem",marginBottom:"1rem"}}>
+            {loading ? <><span className="spinner" style={{width:16,height:16}}/> Betöltés...</> :
+              mode === "login" ? "Belépés" : "Regisztráció"}
+          </button>
+          <div style={{textAlign:"center",color:"var(--muted)",fontSize:"0.85rem"}}>
+            {mode === "login" ? "Még nincs fiókod? " : "Már van fiókod? "}
+            <span style={{color:"var(--neon)",cursor:"pointer"}}
+              onClick={()=>{setMode(mode==="login"?"register":"login");setError("");}}>
+              {mode === "login" ? "Regisztrálj!" : "Jelentkezz be!"}
+            </span>
+          </div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function GymBro() {
   const [tab, setTab] = useState("kereses");
   const [profiles, setProfiles] = useState(DEMO_PROFILES);
   const [dbLoading, setDbLoading] = useState(true);
   const [selected, setSelected] = useState(null);
+  const [user, setUser] = useState(null);
+  const [showAuth, setShowAuth] = useState(false);
+  const [myProfileId, setMyProfileId] = useState(null);
 
   // Filters
   const [fMegye, setFMegye] = useState("");
@@ -394,6 +465,15 @@ export default function GymBro() {
 
   const toggleArr = (arr, val) => arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
 
+  // Auth listener
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setUser(data.session?.user ?? null));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
   useEffect(() => {
     async function loadProfiles() {
       setDbLoading(true);
@@ -404,9 +484,16 @@ export default function GymBro() {
             id: p.id, nev: p.nev, kor: p.kor, megye: p.megye, varos: p.varos,
             gym: p.gym, edzesTipus: p.edzes_tipus || [], eroSzint: p.ero_szint,
             napok: p.napok || [], idopontok: p.idopontok || [], leiras: p.leiras,
-            avatar: "👤", online: p.online ?? true
+            avatar: "👤", online: p.online ?? true, userId: p.user_id
           }));
           setProfiles([...mapped, ...DEMO_PROFILES]);
+          // Ha be van jelentkezve, megkeressük a saját profil id-jét
+          const session = await supabase.auth.getSession();
+          const uid = session.data.session?.user?.id;
+          if (uid) {
+            const own = mapped.find(p => p.userId === uid);
+            if (own) setMyProfileId(own.id);
+          }
         }
       } catch(e) {}
       setDbLoading(false);
@@ -484,6 +571,7 @@ Az indexek 1-alapúak, max 3 ajánlást adj.`;
   }
 
   async function saveProfile() {
+    if (!user) { setShowAuth(true); return; }
     if (!myProfile.nev || !myProfile.megye || myProfile.edzesTipus.length === 0) {
       setSaveError("Kérlek töltsd ki a kötelező mezőket: Név, Megye, Edzéstípus");
       return;
@@ -495,15 +583,27 @@ Az indexek 1-alapúak, max 3 ajánlást adj.`;
         megye: myProfile.megye, varos: myProfile.varos, gym: myProfile.gym,
         edzes_tipus: myProfile.edzesTipus, ero_szint: myProfile.eroSzint,
         napok: myProfile.napok, idopontok: myProfile.idopontok,
-        leiras: myProfile.leiras, online: true
+        leiras: myProfile.leiras, online: true, user_id: user.id
       }]).select().single();
       if (error) throw error;
-      const newP = { ...myProfile, id: data.id, kor: parseInt(myProfile.kor)||25, avatar: "👤", online: true };
+      const newP = { ...myProfile, id: data.id, kor: parseInt(myProfile.kor)||25, avatar: "👤", online: true, userId: user.id };
       setProfiles(prev => [newP, ...prev]);
+      setMyProfileId(data.id);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch(e) {
       setSaveError("Hiba a mentés során: " + (e.message || "ismeretlen hiba"));
+    }
+  }
+
+  async function deleteMyProfile() {
+    if (!myProfileId || !user) return;
+    if (!window.confirm("Biztosan törlöd a profilodat?")) return;
+    const { error } = await supabase.from("profiles").delete().eq("id", myProfileId);
+    if (!error) {
+      setProfiles(prev => prev.filter(p => p.id !== myProfileId));
+      setMyProfileId(null);
+      setMyProfile({ nev:"", kor:"", megye:"", varos:"", gym:"", edzesTipus:[], eroSzint:"", napok:[], idopontok:[], leiras:"" });
     }
   }
 
@@ -518,6 +618,16 @@ Az indexek 1-alapúak, max 3 ajánlást adj.`;
             {[["kereses","🔍 Keresés"],["ai","🤖 AI Ajánló"],["profil","👤 Profilom"]].map(([k,l]) => (
               <button key={k} className={`nav-tab ${tab===k?"active":""}`} onClick={()=>setTab(k)}>{l}</button>
             ))}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:"0.5rem"}}>
+            {user ? (
+              <>
+                <span style={{fontSize:"0.75rem",color:"var(--muted)",maxWidth:140,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.email}</span>
+                <button className="btn btn-ghost btn-sm" onClick={()=>supabase.auth.signOut()}>Kilépés</button>
+              </>
+            ) : (
+              <button className="btn btn-neon btn-sm" onClick={()=>setShowAuth(true)}>Belépés</button>
+            )}
           </div>
         </nav>
 
@@ -662,6 +772,14 @@ Az indexek 1-alapúak, max 3 ajánlást adj.`;
               {saved && <div className="alert alert-success">✅ Profil mentve! Megjelentél a keresőben.</div>}
               {saveError && <div className="alert alert-error">{saveError}</div>}
 
+              {!user && (
+                <div className="card" style={{textAlign:"center",padding:"2rem",marginBottom:"1rem"}}>
+                  <div style={{fontSize:"2rem",marginBottom:"0.5rem"}}>🔒</div>
+                  <div style={{marginBottom:"1rem",color:"var(--muted)"}}>Jelentkezz be hogy feltölthesd a profilodat!</div>
+                  <button className="btn btn-neon" onClick={()=>setShowAuth(true)}>Belépés / Regisztráció</button>
+                </div>
+              )}
+
               <div className="card">
                 <div className="grid-2">
                   <div className="form-group">
@@ -747,9 +865,18 @@ Az indexek 1-alapúak, max 3 ajánlást adj.`;
                 </div>
 
                 <div className="divider" />
-                <button className="btn btn-neon" onClick={saveProfile} style={{width:"100%",justifyContent:"center",padding:"0.8rem"}}>
-                  💾 Profil mentése és megjelenítése
-                </button>
+                <div style={{display:"flex",gap:"0.75rem"}}>
+                  <button className="btn btn-neon" onClick={saveProfile} disabled={!user}
+                    style={{flex:1,justifyContent:"center",padding:"0.8rem"}}>
+                    💾 Profil mentése és megjelenítése
+                  </button>
+                  {myProfileId && (
+                    <button className="btn btn-outline btn-sm" onClick={deleteMyProfile}
+                      style={{borderColor:"var(--red)",color:"var(--red)"}}>
+                      🗑 Törlés
+                    </button>
+                  )}
+                </div>
               </div>
             </>
           )}
@@ -758,18 +885,7 @@ Az indexek 1-alapúak, max 3 ajánlást adj.`;
       </div>
 
       {selected && <ProfileModal profile={selected} onClose={()=>setSelected(null)} />}
+      {showAuth && <AuthModal onClose={()=>setShowAuth(false)} />}
     </>
   );
 }
-<!DOCTYPE html>
-<html lang="hu">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GymBro – Edzőpartner kereső</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/main.jsx"></script>
-  </body>
-</html>
